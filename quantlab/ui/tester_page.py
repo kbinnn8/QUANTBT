@@ -128,12 +128,10 @@ def pvals(tpl: str) -> dict:
 
 
 def current_params(cls, tpl: str) -> dict:
+    """目前的參數值：只從 pvals 讀（widget 不在畫面上時，Streamlit 會把它的值重設成預設值，不能依賴）。"""
     store = pvals(tpl)
     out = {}
     for name, default in cls.params.items():
-        wkey = f"w::{tpl}::{name}"
-        if wkey in st.session_state:          # 剛在「參數」分頁改的值（還沒存進 store）優先
-            store[name] = st.session_state[wkey]
         v = store.get(name, default)
         if type(v) is not type(default) and not (isinstance(default, float) and isinstance(v, int)):
             v = default           # 程式碼裡改了參數型別：用新的預設值
@@ -141,8 +139,12 @@ def current_params(cls, tpl: str) -> dict:
     return out
 
 
+def _save_param(tpl: str, name: str, key: str):
+    """widget 一改動就存進 pvals（回呼在重新執行前觸發，所以按「開始回測」時一定拿得到新值）。"""
+    pvals(tpl)[name] = st.session_state[key]
+
+
 def param_widgets(cls, tpl: str) -> dict:
-    store = pvals(tpl)
     params = current_params(cls, tpl)
     if not params:
         st.info("這個策略沒有可調參數（在 class 裡加上 `params = {...}` 就會出現在這裡）。")
@@ -151,26 +153,22 @@ def param_widgets(cls, tpl: str) -> dict:
     for k, (name, value) in enumerate(params.items()):
         c = cols[k % len(cols)]
         key = f"w::{tpl}::{name}"
-        if key not in st.session_state:        # 切換分頁回來時，用儲存的值初始化
-            st.session_state[key] = value
+        st.session_state[key] = value          # 每次都用儲存的值初始化（使用者的修改已經由回呼存進去）
         default = cls.params[name]
+        cb = dict(key=key, on_change=_save_param, args=(tpl, name, key))
         if isinstance(default, bool):
-            v = c.toggle(name, key=key)
+            c.toggle(name, **cb)
         elif isinstance(default, int):
-            v = int(c.number_input(name, step=1, key=key))
+            c.number_input(name, step=1, **cb)
         elif isinstance(default, float):
             step = 0.01 if abs(default) < 1 else 0.1 if abs(default) < 10 else 1.0
-            v = float(c.number_input(name, step=step, format="%g", key=key))
+            c.number_input(name, step=step, format="%g", **cb)
         else:
-            v = c.text_input(name, key=key)
-        store[name] = v
-        params[name] = v
+            c.text_input(name, **cb)
     if st.button("全部還原為預設值", key=f"reset_params::{tpl}"):
-        store.clear()
-        for name in cls.params:
-            st.session_state.pop(f"w::{tpl}::{name}", None)
+        pvals(tpl).clear()
         st.rerun()
-    return params
+    return current_params(cls, tpl)
 
 
 # ───────────────────────── 圖 ─────────────────────────
@@ -480,8 +478,6 @@ def on_start():
 
 def apply_params(tpl: str, values: dict):
     pvals(tpl).update(values)
-    for k in values:
-        st.session_state.pop(f"w::{tpl}::{k}", None)
     st.session_state["tester_run"] = True
     st.session_state["tester_view"] = "回測報告"
 
