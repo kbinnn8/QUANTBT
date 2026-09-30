@@ -1,4 +1,5 @@
 streamlit>=1.45
+streamlit-ace
 yfinance
 pandas>=2.0
 numpy

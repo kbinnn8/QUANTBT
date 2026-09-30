@@ -17,7 +17,7 @@ def use_pair(a: str, b: str) -> None:
     st.session_state["strategy"] = pair_trading.NAME
     st.session_state[f"{pair_trading.NAME}:asset_a"] = a
     st.session_state[f"{pair_trading.NAME}:asset_b"] = b
-    st.session_state["page"] = "回測"
+    st.session_state["page"] = "書中範例"
 
 
 def render(all_prices: pd.DataFrame, cost_bps: float) -> None:

@@ -67,6 +67,17 @@ button[data-baseweb="tab"][aria-selected="true"] { color:#f2f1ec; }
 [data-testid="stExpander"] details { border-color:#2a2a28; border-radius:12px; }
 [data-testid="stDataFrame"] { border:1px solid #2a2a28; border-radius:10px; }
 .hint { color:#898781; font-size:.82rem; line-height:1.6; }
+
+/* MT5 風格報告表 */
+.rep-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(270px, 1fr)); gap:.75rem; margin:.3rem 0 1rem; }
+.rep { background:#161615; border:1px solid #2a2a28; border-radius:12px; padding:.8rem 1rem .6rem; }
+.rep h4 { margin:0 0 .5rem; font-size:.72rem; letter-spacing:.1em; text-transform:uppercase; color:#898781; font-weight:600; }
+.rep-row { display:flex; justify-content:space-between; gap:1rem; padding:.28rem 0; border-bottom:1px solid #222221; font-size:.86rem; }
+.rep-row:last-child { border-bottom:none; }
+.rep-row span:first-child { color:#c3c2b7; }
+.rep-row span:last-child { font-family:'JetBrains Mono', monospace; color:#f2f1ec; text-align:right; }
+.rep-row .up { color:#0ca30c !important; } .rep-row .down { color:#e66767 !important; }
+.code-note { color:#898781; font-size:.8rem; margin:-.3rem 0 .6rem; }
 </style>
 """
 
@@ -113,3 +124,14 @@ def style(fig: go.Figure, height: int = 360, title: str | None = None, legend: b
     fig.update_xaxes(gridcolor=GRID, linecolor=AXIS, zerolinecolor=AXIS, tickfont=dict(color=MUTED))
     fig.update_yaxes(gridcolor=GRID, linecolor=AXIS, zerolinecolor=AXIS, tickfont=dict(color=MUTED))
     return fig
+
+
+def report_table(sections: list[tuple[str, list[tuple]]]) -> str:
+    """sections: [(標題, [(名稱, 數值字串, 'up'|'down'|None), ...]), ...]"""
+    out = []
+    for title, rows in sections:
+        body = "".join(
+            f'<div class="rep-row"><span>{esc(r[0])}</span>'
+            f'<span class="{r[2] if len(r) > 2 and r[2] else ""}">{esc(r[1])}</span></div>' for r in rows)
+        out.append(f'<div class="rep"><h4>{esc(title)}</h4>{body}</div>')
+    return f'<div class="rep-grid">{"".join(out)}</div>'

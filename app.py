@@ -9,7 +9,7 @@ import datetime as dt
 import streamlit as st
 
 from quantlab.data import load_prices
-from quantlab.ui import backtest_page, chart_page, scanner_page
+from quantlab.ui import backtest_page, chart_page, scanner_page, tester_page
 from quantlab.ui import theme as T
 
 st.set_page_config(page_title="Quant Lab", page_icon="📈", layout="wide",
@@ -25,12 +25,33 @@ PRESETS = {
     "外匯：商品貨幣": ["AUDUSD=X", "NZDUSD=X", "CAD=X"],
     "美股大盤 ETF": ["SPY", "QQQ", "IWM", "DIA"],
 }
-PAGES = ["圖表", "回測", "配對掃描"]
+PAGES = ["策略測試器", "圖表", "書中範例", "配對掃描"]
 
 if "watchlist" not in st.session_state:
     st.session_state["watchlist"] = PRESETS["黃金相關（書中範例）"]
-if "page" not in st.session_state:
-    st.session_state["page"] = "回測"
+if st.session_state.get("page") not in PAGES:
+    st.session_state["page"] = "策略測試器"
+
+
+def password_gate():
+    """如果在 Streamlit 的 Secrets 設定了 APP_PASSWORD，就要求輸入密碼（程式碼會在伺服器上執行）。"""
+    try:
+        pw = st.secrets.get("APP_PASSWORD")
+    except Exception:
+        pw = None
+    if not pw or st.session_state.get("authed"):
+        return
+    st.markdown('<div class="page-title">Quant Lab</div>', unsafe_allow_html=True)
+    typed = st.text_input("密碼", type="password")
+    if typed and typed == pw:
+        st.session_state["authed"] = True
+        st.rerun()
+    elif typed:
+        st.error("密碼錯誤")
+    st.stop()
+
+
+password_gate()
 
 
 def load_preset():
@@ -90,12 +111,19 @@ with top_r:
         choice = st.segmented_control("頁面", PAGES, key="page", label_visibility="collapsed")
     except AttributeError:
         choice = st.radio("頁面", PAGES, key="page", horizontal=True, label_visibility="collapsed")
-page = choice or "回測"
+page = choice or "策略測試器"
 
 watchlist = [t for t in st.session_state["watchlist"] if str(t).strip()]
 
 if page == "圖表":
     chart_page.render(watchlist)
+    st.stop()
+
+if page == "策略測試器":
+    if start >= end:
+        st.error("開始日期必須早於結束日期。")
+        st.stop()
+    tester_page.render(watchlist, start, end, cost_bps)
     st.stop()
 
 if not watchlist:
