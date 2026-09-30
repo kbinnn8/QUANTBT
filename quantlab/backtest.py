@@ -29,7 +29,7 @@ def run_backtest(prices: pd.DataFrame, weights: pd.DataFrame,
     cost_bps：單邊交易成本（基點，1 bp = 0.01%）。書中 Example 3.7 用 5 bp。
     成本 = 單邊成本 × 當天權重變化的絕對值總和（買或賣各算一次）。
     """
-    weights = weights.reindex(prices.index).fillna(0.0)
+    weights = weights.reindex(prices.index).fillna(0.0).astype(float)
     asset_ret = prices.pct_change()
     held = weights.shift(1)                      # 昨天收盤的部位，賺今天的漲跌
     gross = (held * asset_ret).sum(axis=1, min_count=1)

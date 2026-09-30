@@ -48,7 +48,8 @@ def johansen(train_prices: pd.DataFrame) -> tuple[np.ndarray, int]:
 
     res = coint_johansen(train_prices.to_numpy(), det_order=0, k_ar_diff=1)
     n_rel = int((res.lr1 > res.cvt[:, 1]).cumprod().sum())   # 依序比較 trace 統計量
-    return res.evec[:, 0], n_rel
+    # numpy 的特徵值分解有時會回傳「虛部為 0 的複數」，這裡轉回實數
+    return np.real(np.asarray(res.evec[:, 0])).astype(float), n_rel
 
 
 def run(prices: pd.DataFrame, params: dict) -> dict:
