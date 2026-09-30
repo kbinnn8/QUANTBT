@@ -136,14 +136,15 @@ def segment(result: dict, start=None, end=None) -> dict:
 def monthly_returns(equity: pd.Series) -> pd.DataFrame:
     """年 × 月 的報酬表，最後一欄為全年。"""
     eq = equity.dropna()
-    m = eq.groupby([eq.index.year, eq.index.month]).last()
+    # 用 .values 避免 Yahoo 的索引名稱 "Date" 讓年、月兩層名稱重複
+    m = eq.groupby([eq.index.year.values, eq.index.month.values]).last()
+    m.index.names = ["年", "月"]
     first = eq.iloc[0]
     prev = m.shift(1)
     prev.iloc[0] = first
     ret = (m / prev - 1).rename("r").reset_index()
-    ret.columns = ["年", "月", "r"]
     table = ret.pivot(index="年", columns="月", values="r").reindex(columns=range(1, 13))
-    y = eq.groupby(eq.index.year).last()
+    y = eq.groupby(eq.index.year.values).last()
     py = y.shift(1)
     py.iloc[0] = first
     table["全年"] = (y / py - 1).to_numpy()
