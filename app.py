@@ -51,16 +51,20 @@ with st.sidebar:
                      help="Yahoo 代號。美股如 KO；台股直接打數字如 2330（自動判斷上市 / 上櫃）。").strip().upper()
         for i, c in enumerate(cols)
     )
-    period = st.radio("期間", ["書中期間（2006-05 ~ 2007-11）", "最近 10 年", "自訂"], index=0,
-                      help="先用書中期間，可以對照書上的結果；再換成近期資料，看策略還有沒有效。")
+    periods = {"最近 3 年": 3, "最近 5 年": 5, "最近 10 年": 10,
+               "書中期間（2006-05 ~ 2007-11）": None, "自訂": None}
+    period = st.radio("期間", list(periods), index=1,
+                      help="資料來自 Yahoo，近期期間會抓到最新一個交易日。"
+                           "選「書中期間」可以對照書上的結果。")
     today = dt.date.today()
-    if period.startswith("書中"):
+    tomorrow = today + dt.timedelta(days=1)   # yfinance 的 end 不含當天，所以加一天
+    if periods[period]:
+        start, end = today - dt.timedelta(days=round(365.25 * periods[period])), tomorrow
+    elif period.startswith("書中"):
         start, end = dt.date(2006, 5, 23), dt.date(2007, 12, 1)
-    elif period.startswith("最近"):
-        start, end = today.replace(year=today.year - 10), today
     else:
         start = st.date_input("開始", dt.date(2015, 1, 1), min_value=dt.date(1995, 1, 1), max_value=today)
-        end = st.date_input("結束", today, min_value=dt.date(1995, 1, 1), max_value=today)
+        end = st.date_input("結束", today, min_value=dt.date(1995, 1, 1), max_value=today) + dt.timedelta(days=1)
 
     st.subheader("策略參數")
     params = {}
@@ -98,6 +102,9 @@ if len(prices) <= params.get("train_days", 0) + 20:
     st.warning(f"這段期間只有 {len(prices)} 個交易日，扣掉訓練期後測試期太短。"
                "請拉長期間或縮短訓練期。")
     st.stop()
+
+st.caption(f"📅 資料來源：Yahoo Finance（已調整分割與配息），"
+           f"{prices.index[0].date()} ~ {prices.index[-1].date()}，共 {len(prices)} 個交易日")
 
 out = strat.run(prices, params)
 bt = run_backtest(prices, out["weights"], cost_bps)
