@@ -110,3 +110,8 @@ def valid(params: dict) -> bool:
     if params["rule"].startswith("布林"):
         return params["exit_z"] < params["entry_z"]
     return True
+
+
+def warmup(params: dict) -> int:
+    """指標需要幾天的歷史資料才算得出來（這段期間不會有部位）。"""
+    return {"均線交叉": params["slow"], "動能": params["lookback"]}.get(params["rule"], params["bb_window"])

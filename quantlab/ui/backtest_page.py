@@ -186,6 +186,12 @@ def render(all_prices: pd.DataFrame, cost_bps: float) -> None:
         dict(label=ex["kpi"][0], value=ex["kpi"][1]),
     ]), unsafe_allow_html=True)
 
+    if hasattr(strat, "warmup"):
+        w, n_tr = strat.warmup(params), int(is_train.sum())
+        if w > n_tr / 2:
+            st.warning(f"指標需要 {w} 天暖身才有訊號，訓練期 {n_tr} 天中只剩約 {max(n_tr - w, 0)} 天能交易，"
+                       "訓練期的績效參考價值很低。建議加長訓練期，或改用較短的均線 / 回顧天數。")
+
     ok, bad = lookahead_check(strat.run, prices, params)
     st.markdown(T.status(ok, "前視偏差檢查通過：砍掉最後 20 天資料重跑，重疊期間的部位完全一致" if ok
                          else f"前視偏差檢查失敗：有 {bad} 天的部位在砍掉未來資料後改變了"),
@@ -280,7 +286,8 @@ def render(all_prices: pd.DataFrame, cost_bps: float) -> None:
                 c1.plotly_chart(heatmap(g_tr, xs, ys, "訓練期 Sharpe", xl, yl, bad_mask), theme=None)
                 c2.plotly_chart(heatmap(g_te, xs, ys, "測試期 Sharpe", xl, yl, bad_mask), theme=None)
                 st.markdown('<div class="hint">空白格是不合理的參數組合（例如出場門檻 ≥ 進場門檻、短均線 ≥ 長均線）；'
-                            '「無交易」代表那段期間一次都沒進場。</div>', unsafe_allow_html=True)
+                            '「無交易」代表那段期間一次都沒進場。如果某一整列的數字都一樣，'
+                            '通常是指標天數太長、訓練期大半都在暖身，幾乎沒有交易。</div>', unsafe_allow_html=True)
 
     with t_data:
         export = prices.copy()
