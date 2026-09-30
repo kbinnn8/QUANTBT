@@ -47,7 +47,8 @@ with st.sidebar:
     st.subheader("資料")
     cols = st.columns(strat.N_ASSETS)
     tickers = tuple(
-        c.text_input(f"標的 {i + 1}", value=strat.DEFAULT_TICKERS[i], key=f"tk{i}").strip().upper()
+        c.text_input(f"標的 {i + 1}", value=strat.DEFAULT_TICKERS[i], key=f"tk{i}",
+                     help="Yahoo 代號。美股如 KO；台股直接打數字如 2330（自動判斷上市 / 上櫃）。").strip().upper()
         for i, c in enumerate(cols)
     )
     period = st.radio("期間", ["書中期間（2006-05 ~ 2007-11）", "最近 10 年", "自訂"], index=0,
@@ -74,8 +75,10 @@ with st.sidebar:
             params[p["key"]] = st.slider(p["label"], float(p["min"]), float(p["max"]), float(p["default"]),
                                          step=float(p["step"]), help=p.get("help"))
 
-    cost_bps = st.slider("單邊交易成本（bp）", 0.0, 20.0, 5.0, 0.5,
-                         help="1 bp = 0.01%。書中 Example 3.7 假設每筆 5 bp。")
+    cost_bps = st.slider("單邊交易成本（bp）", 0.0, 60.0, 5.0, 0.5,
+                         help="1 bp = 0.01%。書中 Example 3.7 用 5 bp（美股大型股）。"
+                              "台股：手續費 14.25 bp（買賣各一次，券商常有折扣）＋ 賣出證交稅 30 bp"
+                              "（ETF 10 bp），平均每邊約 25–30 bp；ETF 約 15–20 bp。")
 
 # ───────────────────────── 資料 + 回測 ─────────────────────────
 st.title(strat_name)
