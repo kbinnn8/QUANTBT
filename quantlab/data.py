@@ -34,10 +34,15 @@ def normalize_ticker(t: str) -> str:
     return f"{t}.TW" if t.isdigit() else t
 
 
-def load_prices(tickers: list[str], start, end) -> pd.DataFrame:
-    raw_inputs = [t.strip().upper() for t in tickers if t.strip()]
+def load_prices(tickers: list[str], start, end) -> tuple[pd.DataFrame, list[str]]:
+    """回傳（收盤價 DataFrame, 抓不到資料的代號清單）。
+
+    收盤價「沒有」對齊日期：每一檔保留自己的完整歷史，
+    需要多檔同時有價格的地方再自行 dropna（對應書中的 intersect）。
+    """
+    raw_inputs = list(dict.fromkeys(t.strip().upper() for t in tickers if t.strip()))
     resolved = [normalize_ticker(t) for t in raw_inputs]
-    close = _download_close(resolved, start, end)
+    close = _download_close(resolved, start, end) if resolved else pd.DataFrame()
 
     # 純數字代號在上市找不到時，改試上櫃
     for i, (orig, t) in enumerate(zip(raw_inputs, resolved)):
@@ -49,9 +54,9 @@ def load_prices(tickers: list[str], start, end) -> pd.DataFrame:
                 resolved[i] = alt
 
     missing = [t for t in resolved if not _has_data(close, t)]
-    if missing:
-        raise ValueError(f"這些代號沒有資料：{', '.join(missing)}")
-    close = close[resolved]
-    close.index = pd.to_datetime(close.index).tz_localize(None)
-    # 只保留所有標的都有價格的交易日（對應書中的 intersect）
-    return close.dropna(how="any")
+    ok = [t for t in resolved if t not in missing]
+    close = close[ok] if ok else pd.DataFrame()
+    if not close.empty:
+        close.index = pd.to_datetime(close.index).tz_localize(None)
+        close = close.dropna(how="all").sort_index()
+    return close, missing
