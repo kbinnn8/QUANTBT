@@ -2,13 +2,19 @@
 
 時間順序（每根 K 棒 i）：
 1. 以開盤價執行上一根 next() 下的單（市價單在「下一根開盤」成交，不會用到當根收盤價 → 避免前視偏差）
-2. 用當根的最高 / 最低價檢查停損、停利（同一根兩者都碰到時，保守假設先碰停損）
+2. 用當根的最高 / 最低價檢查停損、停利（同一根兩者都碰到時，保守假設先碰停損；跳空穿越以開盤價成交）
 3. 以收盤價計算淨值
 4. 呼叫策略的 next()，決定下一步
 帳戶是「淨部位」模式：同時只有一個方向的部位；持有空單時下買單會先平空再做多（反手）。
+
+交易成本：手續費（成交金額 × bp）＋ 滑價（成交價往不利方向移動 bp）。
+部位大小：策略呼叫 buy()/sell() 沒指定 size 時，用測試設定的「部位大小」；
+有指定 size 時，size 代表淨值比例（1 = 100%）。
 """
 from __future__ import annotations
 
+import math
+import sys
 import traceback
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -19,10 +25,21 @@ import pandas as pd
 from . import ta
 
 STRATEGY_FILENAME = "strategy.py"
+SIZING_MODES = ["淨值比例", "固定金額", "固定數量"]
 
 
 class StrategyError(Exception):
     """使用者策略程式碼出錯（訊息已整理成只顯示策略檔的行號）。"""
+
+
+@dataclass
+class Settings:
+    cash: float = 100_000.0
+    commission_bps: float = 5.0      # 單邊手續費
+    slippage_bps: float = 0.0        # 單邊滑價
+    sizing_mode: str = "淨值比例"     # 淨值比例 / 固定金額 / 固定數量
+    sizing_value: float = 1.0        # 1.0 = 100% 淨值；或金額；或數量
+    lot_size: float = 0.0            # 最小交易單位（0 = 可以零碎；台股整張 = 1000）
 
 
 # ───────────────────────── 策略基底類別 ─────────────────────────
@@ -60,6 +77,10 @@ class Strategy:
                                      overlay=overlay))
         return arr
 
+    def log(self, *msg):
+        """寫一行訊息到「日誌」分頁（類似 MT5 的 Print）"""
+        self._broker.journal_add(self.i, "策略訊息", " ".join(str(m) for m in msg))
+
     # 狀態
     @property
     def time(self):
@@ -87,6 +108,11 @@ class Strategy:
         return self._broker.cash + self._broker.position * self.close[self.i]
 
     @property
+    def balance(self) -> float:
+        """已實現餘額（不含未平倉損益）"""
+        return self._broker.balance
+
+    @property
     def entry_price(self) -> float:
         return self._broker.entry_price
 
@@ -105,18 +131,18 @@ class Strategy:
         return r if b.position > 0 else -r
 
     # 下單（下一根開盤成交）
-    def buy(self, size: float = 1.0, sl=None, tp=None, sl_pct=None, tp_pct=None, tag: str = ""):
-        """做多。size = 使用淨值的比例（1 = 100%）。
+    def buy(self, size: float | None = None, sl=None, tp=None, sl_pct=None, tp_pct=None, tag: str = ""):
+        """做多。size 不填 = 用測試設定的部位大小；填數字 = 淨值比例（1 = 100%）。
         sl / tp 為價格；sl_pct / tp_pct 為相對成交價的比例（例如 0.05 = 5%）。"""
         self._broker.submit(self.i, "buy", size, sl, tp, sl_pct, tp_pct, tag)
 
-    def sell(self, size: float = 1.0, sl=None, tp=None, sl_pct=None, tp_pct=None, tag: str = ""):
+    def sell(self, size: float | None = None, sl=None, tp=None, sl_pct=None, tp_pct=None, tag: str = ""):
         """做空。參數同 buy()。"""
         self._broker.submit(self.i, "sell", size, sl, tp, sl_pct, tp_pct, tag)
 
     def close_position(self, tag: str = ""):
         """平倉（下一根開盤成交）"""
-        self._broker.submit(self.i, "close", 0, None, None, None, None, tag)
+        self._broker.submit(self.i, "close", None, None, None, None, None, tag)
 
     def set_sl(self, price):
         """修改目前部位的停損價（下一根開始生效），可用來做移動停損"""
@@ -132,7 +158,7 @@ class Strategy:
 class Order:
     i: int
     kind: str
-    size: float
+    size: float | None
     sl: float | None
     tp: float | None
     sl_pct: float | None
@@ -143,8 +169,7 @@ class Order:
 @dataclass
 class Broker:
     data: pd.DataFrame
-    cash: float
-    cost_bps: float
+    s: Settings
     position: float = 0.0
     entry_price: float = float("nan")
     entry_i: int | None = None
@@ -155,32 +180,59 @@ class Broker:
     pending: list = field(default_factory=list)
     orders: list = field(default_factory=list)
     trades: list = field(default_factory=list)
+    journal: list = field(default_factory=list)
 
     def __post_init__(self):
         d = self.data
         self.o, self.h = d["Open"].to_numpy(float), d["High"].to_numpy(float)
         self.l, self.c = d["Low"].to_numpy(float), d["Close"].to_numpy(float)
         self.idx = d.index
-        self.rate = self.cost_bps / 1e4
+        self.cash = float(self.s.cash)
+        self.balance = float(self.s.cash)
+        self.comm_rate = self.s.commission_bps / 1e4
+        self.slip = self.s.slippage_bps / 1e4
+
+    def journal_add(self, i, kind, text):
+        if len(self.journal) < 20_000:
+            self.journal.append(dict(時間=self.idx[i], 類型=kind, 內容=text))
 
     def submit(self, i, kind, size, sl, tp, sl_pct, tp_pct, tag):
-        if kind in ("buy", "sell") and not (size and size > 0):
-            raise ValueError("size 必須大於 0（1 = 使用 100% 淨值）")
-        o = Order(i, kind, float(size or 0), sl, tp, sl_pct, tp_pct, tag)
+        if kind in ("buy", "sell") and size is not None and not size > 0:
+            raise ValueError("size 必須大於 0（1 = 使用 100% 淨值），或不填使用測試設定")
+        o = Order(i, kind, None if size is None else float(size), sl, tp, sl_pct, tp_pct, tag)
         self.pending.append(o)
-        self.orders.append((i, kind, round(float(size or 0), 10)))
+        self.orders.append((i, kind, None if size is None else round(float(size), 10)))
+        name = {"buy": "買進", "sell": "賣出", "close": "平倉"}[kind]
+        self.journal_add(i, "下單", f"{name}（下一根開盤成交）" + (f" · {tag}" if tag else ""))
+
+    def _units(self, o: Order, price: float) -> float:
+        equity = self.cash + self.position * price
+        if o.size is not None:
+            units = o.size * equity / price
+        elif self.s.sizing_mode == "固定金額":
+            units = self.s.sizing_value / price
+        elif self.s.sizing_mode == "固定數量":
+            units = self.s.sizing_value
+        else:
+            units = self.s.sizing_value * equity / price
+        lot = self.s.lot_size
+        if lot and lot > 0:
+            units = math.floor(units / lot + 1e-9) * lot
+        return units
 
     # 成交
     def _open(self, i, direction: int, o: Order):
-        price = self.o[i]
-        if not np.isfinite(price) or price <= 0:
+        raw = self.o[i]
+        if not np.isfinite(raw) or raw <= 0:
             return
-        equity = self.cash + self.position * price
-        units = o.size * equity / price
+        price = raw * (1 + direction * self.slip)
+        units = self._units(o, price)
         if units <= 0:
+            self.journal_add(i, "略過", f"資金不足以{'買進' if direction > 0 else '賣出'}一個交易單位")
             return
-        comm = units * price * self.rate
+        comm = units * price * self.comm_rate
         self.cash -= direction * units * price + comm
+        self.balance -= comm
         self.position = direction * units
         self.entry_price, self.entry_i, self.entry_comm, self.entry_tag = price, i, comm, o.tag
         sl, tp = o.sl, o.tp
@@ -190,16 +242,21 @@ class Broker:
             tp = price * (1 + direction * o.tp_pct)
         self.sl = float(sl) if sl is not None and np.isfinite(sl) else None
         self.tp = float(tp) if tp is not None and np.isfinite(tp) else None
+        extra = "".join([f"，停損 {self.sl:.4g}" if self.sl else "", f"，停利 {self.tp:.4g}" if self.tp else ""])
+        self.journal_add(i, "成交", f"{'做多' if direction > 0 else '做空'} {units:,.4g} @ {price:.4g}"
+                                   f"（手續費 {comm:,.2f}）{extra}")
 
-    def close_at(self, i, price, reason):
+    def close_at(self, i, raw_price, reason):
         if self.position == 0:
             return
         units = self.position
-        comm = abs(units) * price * self.rate
-        self.cash += units * price - comm
         direction = 1 if units > 0 else -1
+        price = raw_price * (1 - direction * self.slip)
+        comm = abs(units) * price * self.comm_rate
+        self.cash += units * price - comm
         gross = units * (price - self.entry_price)
         pnl = gross - self.entry_comm - comm
+        self.balance += gross - comm
         seg_h, seg_l = self.h[self.entry_i:i + 1], self.l[self.entry_i:i + 1]
         if direction > 0:
             mfe, mae = np.nanmax(seg_h) / self.entry_price - 1, np.nanmin(seg_l) / self.entry_price - 1
@@ -212,25 +269,33 @@ class Broker:
             損益=pnl, 報酬率=pnl / (abs(units) * self.entry_price),
             手續費=self.entry_comm + comm, 持有K棒=i - self.entry_i,
             最大有利波動=mfe, 最大不利波動=mae,
-            進場標籤=self.entry_tag, 出場原因=reason,
+            進場標籤=self.entry_tag, 出場原因=reason, 餘額=self.balance,
         ))
+        self.journal_add(i, "平倉", f"{reason}：{'多單' if direction > 0 else '空單'} {abs(units):,.4g} @ {price:.4g}，"
+                                   f"損益 {pnl:+,.2f}，餘額 {self.balance:,.2f}")
         self.position, self.entry_price, self.entry_i = 0.0, float("nan"), None
         self.entry_comm, self.sl, self.tp = 0.0, None, None
 
     def execute_pending(self, i):
         for o in self.pending:
             if o.kind == "close":
+                if self.position == 0:
+                    self.journal_add(i, "略過", "平倉單：目前沒有部位")
                 self.close_at(i, self.o[i], o.tag or "訊號平倉")
             elif o.kind == "buy":
+                if self.position > 0:
+                    self.journal_add(i, "略過", "買進單：已持有多單")
+                    continue
                 if self.position < 0:
                     self.close_at(i, self.o[i], o.tag or "反手")
-                if self.position == 0:
-                    self._open(i, +1, o)
+                self._open(i, +1, o)
             elif o.kind == "sell":
+                if self.position < 0:
+                    self.journal_add(i, "略過", "賣出單：已持有空單")
+                    continue
                 if self.position > 0:
                     self.close_at(i, self.o[i], o.tag or "反手")
-                if self.position == 0:
-                    self._open(i, -1, o)
+                self._open(i, -1, o)
         self.pending = []
 
     def check_stops(self, i):
@@ -255,7 +320,7 @@ def load_strategy(code: str) -> type:
     import linecache
     # 讓錯誤訊息能顯示出錯的那一行程式碼
     linecache.cache[STRATEGY_FILENAME] = (len(code), None, code.splitlines(True), STRATEGY_FILENAME)
-    ns = {"Strategy": Strategy, "ta": ta, "np": np, "pd": pd, "__name__": "user_strategy"}
+    ns = {"Strategy": Strategy, "ta": ta, "np": np, "pd": pd, "math": math, "__name__": "user_strategy"}
     try:
         exec(compile(code, STRATEGY_FILENAME, "exec"), ns)
     except SyntaxError as e:
@@ -270,23 +335,34 @@ def load_strategy(code: str) -> type:
 
 def format_user_error() -> str:
     """只保留策略檔裡的錯誤行，讓訊息好讀。"""
-    tb = traceback.extract_tb(__import__("sys").exc_info()[2])
-    exc = __import__("sys").exc_info()[1]
+    _, exc, tb_obj = sys.exc_info()
+    tb = traceback.extract_tb(tb_obj)
     lines = [f"第 {fr.lineno} 行（{fr.name}）：{fr.line}" for fr in tb if fr.filename == STRATEGY_FILENAME]
     where = "\n".join(lines[-3:]) if lines else "（錯誤發生在策略程式碼之外）"
     return f"{type(exc).__name__}: {exc}\n{where}"
 
 
 # ───────────────────────── 執行回測 ─────────────────────────
+def _settings(cash, cost_bps, opts) -> Settings:
+    return Settings(cash=float(cash), commission_bps=float(cost_bps),
+                    slippage_bps=float(opts.get("slippage_bps", 0.0)),
+                    sizing_mode=opts.get("sizing_mode", "淨值比例"),
+                    sizing_value=float(opts.get("sizing_value", 1.0)),
+                    lot_size=float(opts.get("lot_size", 0.0)))
+
+
 def run(strategy_cls: type, data: pd.DataFrame, params: dict | None = None,
-        cash: float = 100_000.0, cost_bps: float = 5.0) -> dict:
+        cash: float = 100_000.0, cost_bps: float = 5.0, **opts) -> dict:
+    """opts：slippage_bps、sizing_mode、sizing_value、lot_size（見 Settings）。"""
     data = data.dropna(subset=["Open", "High", "Low", "Close"])
     if len(data) < 2:
         raise StrategyError("資料不足（少於 2 根 K 棒）")
-    broker = Broker(data=data, cash=float(cash), cost_bps=float(cost_bps))
+    s = _settings(cash, cost_bps, opts)
+    broker = Broker(data=data, s=s)
     strat = strategy_cls(data, params or {}, broker)
     n = len(data)
     equity = np.empty(n)
+    balance = np.empty(n)
     exposure = np.zeros(n, dtype=bool)
     try:
         strat.init()
@@ -295,6 +371,7 @@ def run(strategy_cls: type, data: pd.DataFrame, params: dict | None = None,
                 broker.execute_pending(i)
             broker.check_stops(i)
             equity[i] = broker.cash + broker.position * broker.c[i]
+            balance[i] = broker.balance
             exposure[i] = broker.position != 0
             strat.i = i
             strat.next()
@@ -305,32 +382,35 @@ def run(strategy_cls: type, data: pd.DataFrame, params: dict | None = None,
     if broker.position != 0:
         broker.close_at(n - 1, broker.c[n - 1], "回測結束")
         equity[n - 1] = broker.cash
-    trades = pd.DataFrame(broker.trades)
+        balance[n - 1] = broker.balance
     return dict(
         data=data,
         equity=pd.Series(equity, index=data.index, name="淨值"),
+        balance=pd.Series(balance, index=data.index, name="餘額"),
         exposure=pd.Series(exposure, index=data.index),
-        trades=trades,
+        trades=pd.DataFrame(broker.trades),
+        journal=pd.DataFrame(broker.journal),
         indicators=strat._indicators,
         orders=broker.orders,
         params=vars(strat.p).copy(),
         cash=float(cash),
+        settings=vars(s).copy(),
     )
 
 
-def lookahead_check(strategy_cls, data, params, cash, cost_bps, cuts=(20, 37, 61, 97)) -> tuple[bool, int]:
+def lookahead_check(strategy_cls, data, params, cash, cost_bps, cuts=(20, 37, 61, 97), **opts) -> tuple[bool, int]:
     """書中的前視偏差檢查法：砍掉最後幾根重跑。
 
     如果策略沒偷看未來，截斷後資料的每一根（包含最後一根）下的單都應該和完整資料時相同。
     用幾個不同的截斷點各檢查一次，偷看的策略很難每次都剛好躲過。回傳（是否通過, 不一致的 K 棒數）。
     """
-    full = run(strategy_cls, data, params, cash, cost_bps)["orders"]
+    full = run(strategy_cls, data, params, cash, cost_bps, **opts)["orders"]
     bad_bars: set = set()
     for cut in cuts:
         if len(data) <= cut + 30:
             continue
         part_data = data.iloc[:-cut]
-        part = run(strategy_cls, part_data, params, cash, cost_bps)["orders"]
+        part = run(strategy_cls, part_data, params, cash, cost_bps, **opts)["orders"]
         last = len(part_data) - 1
         a = [o for o in full if o[0] <= last]
         b = [o for o in part if o[0] <= last]

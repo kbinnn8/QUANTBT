@@ -44,7 +44,7 @@ def split_time(data: pd.DataFrame, forward_frac: float):
 
 
 def optimize(strategy_cls, data, base_params: dict, ranges: dict, cash: float, cost_bps: float,
-             objective: str, forward_frac: float, progress=None) -> tuple[pd.DataFrame, object]:
+             objective: str, forward_frac: float, progress=None, **opts) -> tuple[pd.DataFrame, object]:
     combos = grid(ranges)
     split = split_time(data, forward_frac)
     rows = []
@@ -54,7 +54,7 @@ def optimize(strategy_cls, data, base_params: dict, ranges: dict, cash: float, c
         params = {**base_params, **combo}
         row = dict(combo)
         try:
-            res = engine.run(strategy_cls, data, params, cash, cost_bps)
+            res = engine.run(strategy_cls, data, params, cash, cost_bps, **opts)
         except engine.StrategyError as e:
             row["錯誤"] = str(e).splitlines()[0]
             rows.append(row)

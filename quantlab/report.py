@@ -1,6 +1,8 @@
 """MT5 風格的回測報告：從淨值曲線與交易紀錄計算各種統計。"""
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -149,3 +151,92 @@ def monthly_returns(equity: pd.Series) -> pd.DataFrame:
     py.iloc[0] = first
     table["全年"] = (y / py - 1).to_numpy()
     return table
+
+
+# ───────────────────────── MT5 延伸統計 ─────────────────────────
+def _all_streaks(wins: np.ndarray, pnl: np.ndarray, want: bool) -> list[tuple[int, float]]:
+    out, n, amt = [], 0, 0.0
+    for w, p in zip(wins, pnl):
+        if w == want:
+            n, amt = n + 1, amt + p
+        elif n:
+            out.append((n, amt))
+            n, amt = 0, 0.0
+    if n:
+        out.append((n, amt))
+    return out
+
+
+def _peak_dd(series: pd.Series) -> tuple[float, float]:
+    """（最大回撤金額, 最大回撤比例），以該序列自己的高點計算。"""
+    s = series.dropna()
+    if s.empty:
+        return np.nan, np.nan
+    peak = s.cummax()
+    return float((s - peak).min()), float((s / peak - 1).min())
+
+
+def _fmt_td(td) -> str:
+    if td is None or pd.isna(td):
+        return "—"
+    secs = td.total_seconds()
+    if secs >= 86400:
+        return f"{secs / 86400:.1f} 天"
+    if secs >= 3600:
+        return f"{secs / 3600:.1f} 小時"
+    return f"{secs / 60:.0f} 分"
+
+
+def extended(result: dict) -> dict:
+    """MT5 報告裡的其他項目：餘額回撤、Z 分數、AHPR / GHPR、線性迴歸、連續盈虧平均、持有時間…"""
+    eq, bal, t = result["equity"], result.get("balance"), result["trades"]
+    init = float(result["cash"])
+    x = {"K棒數": len(eq), "開始": eq.index[0], "結束": eq.index[-1]}
+    x["淨值回撤絕對值"] = max(0.0, init - float(eq.min()))
+    if bal is not None:
+        x["餘額回撤絕對值"] = max(0.0, init - float(bal.min()))
+        x["餘額最大回撤金額"], x["餘額最大回撤"] = _peak_dd(bal)
+    # 淨值曲線對時間的線性迴歸：越接近 1 代表淨值越穩定地向上
+    y = eq.to_numpy(float)
+    if len(y) > 2 and np.std(y) > 0:
+        xi = np.arange(len(y))
+        slope, icpt = np.polyfit(xi, y, 1)
+        x["LR 相關係數"] = float(np.corrcoef(xi, y)[0, 1])
+        x["LR 標準誤"] = float(np.sqrt(np.sum((y - (slope * xi + icpt)) ** 2) / (len(y) - 2)))
+    n = len(t)
+    if not n:
+        return x
+    pnl = t["損益"].to_numpy(float)
+    wins = pnl > 0
+    x["獲利交易數"], x["虧損交易數"] = int(wins.sum()), int((~wins).sum())
+    x["獲利交易比例"], x["虧損交易比例"] = float(wins.mean()), float((~wins).mean())
+    ws, ls = _all_streaks(wins, pnl, True), _all_streaks(wins, pnl, False)
+    x["平均連續獲利次數"] = float(np.mean([k for k, _ in ws])) if ws else 0.0
+    x["平均連續虧損次數"] = float(np.mean([k for k, _ in ls])) if ls else 0.0
+    if ws:
+        k, a = max(ws, key=lambda z: z[1])
+        x["最大連續獲利金額"], x["最大連續獲利金額次數"] = a, k
+    if ls:
+        k, a = min(ls, key=lambda z: z[1])
+        x["最大連續虧損金額"], x["最大連續虧損金額次數"] = a, k
+    # Z 分數（連串檢定）：|Z| 大代表輸贏有連續性（正 = 輸贏交替、負 = 同向成串）
+    W, L = x["獲利交易數"], x["虧損交易數"]
+    if n > 2 and W and L:
+        runs = 1 + int(np.sum(wins[1:] != wins[:-1]))
+        P = 2.0 * W * L
+        denom = math.sqrt(P * (P - n) / (n - 1)) if P > n else 0
+        if denom > 0:
+            z = (n * (runs - 0.5) - P) / denom
+            x["Z 分數"] = z
+            x["Z 信賴度"] = math.erf(abs(z) / math.sqrt(2))
+    # 持有期報酬（以每筆平倉後餘額計算）
+    if "餘額" in t:
+        b = np.concatenate([[init], t["餘額"].to_numpy(float)])
+        hpr = b[1:] / b[:-1]
+        if np.all(hpr > 0):
+            x["AHPR"] = float(hpr.mean())
+            x["GHPR"] = float(np.prod(hpr) ** (1 / len(hpr)))
+    hold = pd.to_datetime(t["出場時間"]) - pd.to_datetime(t["進場時間"])
+    x["平均持有時間"], x["最長持有時間"], x["最短持有時間"] = hold.mean(), hold.max(), hold.min()
+    x["最長持有K棒"], x["最短持有K棒"] = int(t["持有K棒"].max()), int(t["持有K棒"].min())
+    return x
