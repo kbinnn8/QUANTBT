@@ -119,8 +119,10 @@ s_tr, s_te = metrics.summary(train_net), metrics.summary(test_net)
 # ───────────────────────── 頂部重點數字 ─────────────────────────
 m = st.columns(4)
 m[0].metric("測試期 Sharpe（扣成本）", num(s_te["Sharpe"]),
-            delta=f"{s_te['Sharpe'] - s_tr['Sharpe']:+.2f} vs 訓練期" if not np.isnan(s_te["Sharpe"]) else None)
-m[1].metric("訓練期 Sharpe（扣成本）", num(s_tr["Sharpe"]))
+            delta=(f"{s_te['Sharpe'] - s_tr['Sharpe']:+.2f} vs 訓練期"
+                   if not (np.isnan(s_te["Sharpe"]) or np.isnan(s_tr["Sharpe"])) else None))
+m[1].metric("訓練期 Sharpe（扣成本）", num(s_tr["Sharpe"]),
+            help="顯示「—」代表訓練期一次都沒進場（門檻太嚴），可以調低進場門檻。")
 m[2].metric("測試期最大回撤", pct(s_te["最大回撤"]))
 if "hedge_ratio" in ex:
     m[3].metric("避險比例", num(ex["hedge_ratio"], 3))
