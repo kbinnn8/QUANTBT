@@ -244,7 +244,8 @@ with tab_sweep:
             lim = float(np.nanmax(np.abs(np.concatenate([grid_tr.ravel(), grid_te.ravel()])))) or 1.0
             c1, c2 = st.columns(2)
             for col, grid, title in [(c1, grid_tr, "訓練期 Sharpe"), (c2, grid_te, "測試期 Sharpe")]:
-                text = np.where(np.isnan(grid), "", np.round(grid, 2).astype(str))
+                invalid = np.array([[sweep["x"] == "exit_z" and xv >= yv for xv in xs] for yv in ys])
+                text = np.where(invalid, "", np.where(np.isnan(grid), "無交易", np.round(grid, 2).astype(str)))
                 fig = go.Figure(go.Heatmap(
                     z=grid, x=[str(v) for v in xs], y=[str(v) for v in ys],
                     colorscale=DIVERGING, zmid=0, zmin=-lim, zmax=lim,
@@ -256,7 +257,7 @@ with tab_sweep:
                 fig.update_xaxes(title_text=labels[sweep["x"]], type="category")
                 fig.update_yaxes(title_text=labels[sweep["y"]], type="category")
                 col.plotly_chart(fig)
-            st.caption(f"目前的交易成本 {cost_bps} bp 與其他參數保持不變。空白格代表出場門檻 ≥ 進場門檻，不合理所以略過。")
+            st.caption(f"目前的交易成本 {cost_bps} bp 與其他參數保持不變。空白格代表出場門檻 ≥ 進場門檻，不合理所以略過；「無交易」代表門檻太嚴，那段期間一次都沒進場。")
 
 # ───────────────────────── 資料 ─────────────────────────
 with tab_data:
