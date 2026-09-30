@@ -163,14 +163,20 @@ def price_chart(res: dict, title: str):
                 ys += [r["進場價"], r["出場價"], None]
             fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name=name, hoverinfo="skip",
                                      line=dict(color=color, width=1.5, dash="dot")), row=1, col=1)
+        span = float(data["High"].max() - data["Low"].min()) or 1.0
         for side, symbol, color in [("多", "triangle-up", T.UP), ("空", "triangle-down", T.DOWN)]:
             t = trades[trades["方向"] == side]
             if len(t):
+                # 箭頭畫在 K 棒外側（多單在最低價下方、空單在最高價上方），才不會被 K 線蓋住
+                bar_lo = data["Low"].reindex(t["進場時間"]).to_numpy()
+                bar_hi = data["High"].reindex(t["進場時間"]).to_numpy()
+                y = bar_lo - span * 0.025 if side == "多" else bar_hi + span * 0.025
                 fig.add_trace(go.Scatter(
-                    x=t["進場時間"], y=t["進場價"], mode="markers", name=f"{side}單進場",
-                    marker=dict(symbol=symbol, size=11, color=color, line=dict(color=T.SURFACE, width=1.5)),
-                    customdata=np.stack([t["進場標籤"], t["報酬率"] * 100], axis=1),
-                    hovertemplate=f"{side}單進場 %{{y:.2f}}<br>%{{customdata[0]}}<br>此筆報酬 %{{customdata[1]:.2f}}%<extra></extra>"),
+                    x=t["進場時間"], y=y, mode="markers", name=f"{side}單進場",
+                    marker=dict(symbol=symbol, size=14, color=color, line=dict(color=T.INK, width=1)),
+                    customdata=np.stack([t["進場標籤"], t["報酬率"] * 100, t["進場價"]], axis=1),
+                    hovertemplate=f"{side}單進場 %{{customdata[2]:.2f}}<br>%{{customdata[0]}}"
+                                  f"<br>此筆報酬 %{{customdata[1]:.2f}}%<extra></extra>"),
                     row=1, col=1)
         fig.add_trace(go.Scatter(
             x=trades["出場時間"], y=trades["出場價"], mode="markers", name="出場",
@@ -179,7 +185,10 @@ def price_chart(res: dict, title: str):
             hovertemplate="出場 %{y:.2f}<br>%{customdata[0]}<br>損益 %{customdata[1]:,.0f}<extra></extra>"),
             row=1, col=1)
     fig.update_layout(xaxis_rangeslider_visible=False)
-    fig = T.style(fig, 620 if sub else 520, title)
+    fig = T.style(fig, 660 if sub else 560, title)
+    # 圖例放在圖下方，避免和標題重疊
+    fig.update_layout(legend=dict(orientation="h", y=-0.06, x=0, xanchor="left", yanchor="top"),
+                      margin=dict(b=70))
     return fig
 
 
