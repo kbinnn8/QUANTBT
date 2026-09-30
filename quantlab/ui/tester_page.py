@@ -423,10 +423,14 @@ def optimization_tab(cls, tpl, data, params, cash, cost):
                 '「前推」會保留最後一段資料當作樣本外驗證（和 MT5 的 Forward 相同）。'
                 '好的參數應該在樣本外也維持表現，而不是只有樣本內最高。</div>', unsafe_allow_html=True)
     rows = []
-    for k, v in numeric.items():
+    defaults = cls.params    # 用策略的預設值建範圍表：套用最佳參數後表格才不會被重設
+    for k in numeric:
+        v = defaults.get(k, numeric[k])
         is_int = isinstance(v, int)
-        lo = v * 0.5 if v else 0
-        hi = v * 1.5 if v else 1
+        if v:
+            lo, hi = v * 0.5, v * 1.5
+        else:                               # 預設 0（例如停損關閉）：小數試 0–10%，整數試 0–10
+            lo, hi = 0, (10 if is_int else 0.1)
         step = max(1, round((hi - lo) / 5)) if is_int else round((hi - lo) / 5, 4) or 0.01
         rows.append(dict(參數=k, 最佳化=False, 起始=float(int(lo) if is_int else lo),
                          結束=float(int(hi) if is_int else hi), 間距=float(step)))
